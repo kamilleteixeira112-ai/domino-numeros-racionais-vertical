@@ -28,7 +28,7 @@ const els = {
 
 let state = {
   code: null, role: null, uid: null, room: null, unsubscribe: null,
-  selectedTileId: null, selectedSide: null, selectedOrientation: null,
+  selectedTileId: null, selectedSide: null, selectedOrientation: null, invalidTileId: null,
   demoMode: false, busy: false, announcedResultKey: null, suppressResult: false
 };
 
@@ -70,10 +70,22 @@ function createHalf(label) {
   return half;
 }
 
-function renderHandTile(tile, { selected = false, waiting = false } = {}) {
+/**
+ * Renderiza uma peça da mão. Somente a peça de uma tentativa inválida recebe
+ * sinalização de erro; as demais permanecem visualmente neutras.
+ */
+function renderHandTile(tile, { selected = false, waiting = false, invalid = false } = {}) {
   const el = document.createElement("div");
   el.className = `domino selectable ${selected ? "selected" : ""} ${waiting ? "waiting" : ""}`.trim();
   el.dataset.tileId = tile.id;
+
+  if (invalid) {
+    el.style.borderColor = "#c74444";
+    el.style.background = "#fff5f5";
+    el.style.boxShadow = "0 0 0 4px rgba(199,68,68,.18), 0 3px 8px rgba(31,41,55,.05)";
+    el.setAttribute("aria-label", `${tile.leftLabel} | ${tile.rightLabel}: essa tentativa não encaixa na ponta escolhida`);
+  }
+
   el.append(createHalf(tile.leftLabel), createHalf(tile.rightLabel));
   return el;
 }
@@ -256,11 +268,13 @@ function render() {
   hand.forEach((tile) => {
     const tileEl = renderHandTile(tile, {
       selected: tile.id === state.selectedTileId,
-      waiting: !isMyTurn
+      waiting: !isMyTurn,
+      invalid: tile.id === state.invalidTileId
     });
     tileEl.addEventListener("click", () => {
       if (!isMyTurn) return showMessage("Aguarde", "Ainda não é a sua vez.");
       const deselecting = state.selectedTileId === tile.id;
+      state.invalidTileId = null;
       state.selectedTileId = deselecting ? null : tile.id;
       if (deselecting) {
         state.selectedSide = table.length ? null : "right";
@@ -291,6 +305,7 @@ function resetPlaySelection() {
   state.selectedTileId = null;
   state.selectedSide = null;
   state.selectedOrientation = null;
+  state.invalidTileId = null;
 }
 
 async function handleCreate() {
@@ -298,7 +313,7 @@ async function handleCreate() {
   try {
     setBusy(true);
     const session = await createRoom();
-    state = { ...state, ...session, demoMode: false, selectedTileId: null, selectedSide: null, selectedOrientation: null, announcedResultKey: null, suppressResult: false };
+    state = { ...state, ...session, demoMode: false, selectedTileId: null, selectedSide: null, selectedOrientation: null, invalidTileId: null, announcedResultKey: null, suppressResult: false };
     showGame();
     subscribeCurrentRoom();
   } catch (error) {
@@ -314,7 +329,7 @@ async function handleJoin() {
   try {
     setBusy(true);
     const session = await joinRoom(code);
-    state = { ...state, ...session, demoMode: false, selectedTileId: null, selectedSide: null, selectedOrientation: null, announcedResultKey: null, suppressResult: false };
+    state = { ...state, ...session, demoMode: false, selectedTileId: null, selectedSide: null, selectedOrientation: null, invalidTileId: null, announcedResultKey: null, suppressResult: false };
     showGame();
     subscribeCurrentRoom();
   } catch (error) {
@@ -345,6 +360,7 @@ async function handlePlay() {
 
   try {
     state.busy = true;
+    state.invalidTileId = null;
     render();
     if (state.demoMode) {
       demoPlay(state.room, state.role, state.selectedTileId, side, state.selectedOrientation);
@@ -361,8 +377,13 @@ async function handlePlay() {
       resetPlaySelection();
     }
   } catch (error) {
-    // Mantém a seleção para o aluno revisar sua hipótese após o feedback.
-    showMessage("Essa tentativa não funcionou", error.message);
+    // A incompatibilidade é apenas local: nada é gravado na mesa nem enviado ao outro jogador.
+    if (error?.message === "Essa peça não combina com a ponta escolhida.") {
+      state.invalidTileId = state.selectedTileId;
+      showMessage("Essa peça não encaixa", "Essa peça não encaixa nessa ponta. Confira os valores e tente novamente.");
+    } else {
+      showMessage("Essa tentativa não funcionou", error.message);
+    }
   } finally {
     state.busy = false;
     render();
@@ -424,7 +445,7 @@ function startDemo() {
   const demo = createDemoGame();
   state = {
     ...state, code: demo.code, role: demo.role, room: demo.room, demoMode: true,
-    selectedTileId: null, selectedSide: null, selectedOrientation: null,
+    selectedTileId: null, selectedSide: null, selectedOrientation: null, invalidTileId: null,
     announcedResultKey: null, suppressResult: false
   };
   showGame();
@@ -464,7 +485,7 @@ function leaveLocal() {
   if (els.leaveDialog.open) els.leaveDialog.close();
   state = {
     code: null, role: null, uid: null, room: null, unsubscribe: null,
-    selectedTileId: null, selectedSide: null, selectedOrientation: null,
+    selectedTileId: null, selectedSide: null, selectedOrientation: null, invalidTileId: null,
     demoMode: false, busy: false, announcedResultKey: null, suppressResult: false
   };
   showSetup();
@@ -483,10 +504,10 @@ els.copyCode.addEventListener("click", async () => {
 });
 els.leave.addEventListener("click", handleLeaveClick);
 els.confirmResign.addEventListener("click", (event) => { event.preventDefault(); confirmResignation(); });
-els.left.addEventListener("click", () => { state.selectedSide = "left"; state.selectedOrientation = null; render(); });
-els.right.addEventListener("click", () => { state.selectedSide = "right"; state.selectedOrientation = null; render(); });
-els.horizontal.addEventListener("click", () => { state.selectedOrientation = "horizontal"; render(); });
-els.vertical.addEventListener("click", () => { state.selectedOrientation = "vertical"; render(); });
+els.left.addEventListener("click", () => { state.invalidTileId = null; state.selectedSide = "left"; state.selectedOrientation = null; render(); });
+els.right.addEventListener("click", () => { state.invalidTileId = null; state.selectedSide = "right"; state.selectedOrientation = null; render(); });
+els.horizontal.addEventListener("click", () => { state.invalidTileId = null; state.selectedOrientation = "horizontal"; render(); });
+els.vertical.addEventListener("click", () => { state.invalidTileId = null; state.selectedOrientation = "vertical"; render(); });
 els.confirmPlay.addEventListener("click", handlePlay);
 els.pass.addEventListener("click", handlePass);
 els.hint.addEventListener("click", handleHint);
