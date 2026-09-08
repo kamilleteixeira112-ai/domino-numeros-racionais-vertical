@@ -76,28 +76,47 @@
       <div class="toolbar">
         <button id="hint-btn" class="btn btn-secondary" type="button">💡 Dica</button>
         <button id="rules-btn" class="btn btn-secondary" type="button">📖 Regras</button>
-        <button id="pass-btn" class="btn btn-warning hidden" type="button">⏭️ Passar a vez</button>
+        <button id="pass-btn" class="btn btn-warning hidden" type="button">⏭️ Tentar passar a vez</button>
       </div>
 
       <section class="table-section" aria-labelledby="table-title">
         <div class="table-heading-row">
           <h3 id="table-title">Mesa</h3>
-          <span class="table-tip">A corrente faz curvas como em uma mesa de dominó real.</span>
+          <span class="table-tip">Você escolhe a direção da peça como em um dominó real.</span>
         </div>
         <div id="table-area" class="table-area">
           <div id="table-empty" class="table-empty">A primeira peça pode ser jogada livremente.</div>
           <div id="domino-chain" class="domino-board" aria-label="Peças jogadas"></div>
         </div>
-        <div class="end-controls">
-          <button id="play-left-btn" class="btn btn-secondary" type="button" disabled>← Jogar à esquerda</button>
-          <button id="play-right-btn" class="btn btn-secondary" type="button" disabled>Jogar à direita →</button>
+
+        <div class="play-planner" aria-label="Planejar jogada">
+          <p id="play-instruction" class="play-instruction">1. Escolha qualquer peça da sua mão.</p>
+
+          <div id="side-controls" class="choice-block hidden">
+            <span class="choice-label">Ponta da mesa</span>
+            <div class="choice-buttons">
+              <button id="play-left-btn" class="btn btn-secondary choice-btn" type="button" aria-pressed="false">← Esquerda</button>
+              <button id="play-right-btn" class="btn btn-secondary choice-btn" type="button" aria-pressed="false">Direita →</button>
+            </div>
+          </div>
+
+          <div id="orientation-controls" class="choice-block">
+            <span class="choice-label">Orientação da peça</span>
+            <div class="choice-buttons">
+              <button id="orientation-horizontal-btn" class="btn btn-secondary choice-btn" type="button" aria-pressed="false" disabled>↔ Horizontal</button>
+              <button id="orientation-vertical-btn" class="btn btn-secondary choice-btn" type="button" aria-pressed="false" disabled>↕ Vertical</button>
+            </div>
+          </div>
+
+          <button id="confirm-play-btn" class="btn btn-primary confirm-play" type="button" disabled>🎯 Tentar jogada</button>
+          <p class="microcopy planner-note">Peças e pontas não são bloqueadas por estarem erradas: a equivalência é conferida somente quando você tenta jogar. Apenas uma posição fisicamente impossível na mesa pode ficar indisponível.</p>
         </div>
       </section>
 
       <section class="hand-section" aria-labelledby="hand-title">
         <h3 id="hand-title">Suas peças</h3>
         <div id="hand-area" class="hand-grid" aria-label="Suas peças"></div>
-        <p class="microcopy">Selecione uma peça e depois uma ponta da mesa. Ex.: 1/2 = 0,5.</p>
+        <p class="microcopy">Compare as representações. Ex.: 1/2 e 0,5 representam o mesmo número racional.</p>
       </section>
 
       <div id="teacher-note" class="teacher-note hidden"></div>
@@ -145,10 +164,12 @@
       <div class="modal-body">
         <ol>
           <li>Cada jogador recebe 14 peças.</li>
-          <li>Na primeira jogada, qualquer peça pode ser colocada.</li>
-          <li>Depois, uma ponta da peça precisa representar o mesmo número racional da ponta da mesa, mesmo que esteja escrita de outra forma.</li>
-          <li>Exemplo: <strong>3/4</strong> combina com <strong>0,75</strong>.</li>
-          <li>Se não houver nenhuma jogada possível, o botão <strong>Passar a vez</strong> será liberado.</li>
+          <li>Na primeira jogada, qualquer peça pode ser colocada; você escolhe se ela fica horizontal ou vertical.</li>
+          <li>Nas jogadas seguintes, escolha livremente uma peça, a ponta esquerda/direita e a orientação.</li>
+          <li>O jogo só confere a equivalência depois que você clicar em <strong>Tentar jogada</strong>. Uma tentativa incorreta faz parte do aprendizado e não retira a peça.</li>
+          <li>Uma ponta da peça precisa representar o mesmo número racional da ponta da mesa, mesmo que esteja escrita de outra forma. Ex.: <strong>3/4 = 0,75</strong>.</li>
+          <li>Horizontal/vertical só fica indisponível quando aquela posição não cabe fisicamente na mesa.</li>
+          <li>Você pode tentar <strong>Passar a vez</strong>; se ainda houver alguma jogada válida, o jogo avisa e mantém sua vez.</li>
           <li>Vence quem ficar sem peças. Se os dois jogadores ficarem bloqueados, vence quem tiver menos peças; em empate, quem tiver menor soma numérica.</li>
           <li>Se um jogador desistir durante a partida, o outro vence automaticamente.</li>
         </ol>
