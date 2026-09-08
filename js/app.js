@@ -2,9 +2,9 @@ import {
   isOnlineBackendReady, createRoom, joinRoom, subscribeRoom, playTile,
   passTurn, restartGame, resignGame, markConnected, markDisconnected
 } from "./firebase-service.js";
-import { canPlayTile, validSides, hasAnyMove } from "./game-logic.js";
+import { canPlayTile } from "./game-logic.js";
 import { createDemoGame, demoPlay, demoPass, demoOpponentTurn } from "./demo-service.js";
-import { boardPlacement, boardDimensions } from "./board-layout.js";
+import { availableOrientations, boardMetrics, visualForTile } from "./board-layout.js";
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -16,7 +16,9 @@ const els = {
   scoreP1: $("score-p1"), scoreP2: $("score-p2"), tableCount: $("table-count"), turn: $("turn-label"),
   hint: $("hint-btn"), rules: $("rules-btn"), pass: $("pass-btn"),
   tableEmpty: $("table-empty"), chain: $("domino-chain"), hand: $("hand-area"),
-  left: $("play-left-btn"), right: $("play-right-btn"), teacherNote: $("teacher-note"),
+  sideControls: $("side-controls"), left: $("play-left-btn"), right: $("play-right-btn"),
+  orientationControls: $("orientation-controls"), horizontal: $("orientation-horizontal-btn"), vertical: $("orientation-vertical-btn"),
+  confirmPlay: $("confirm-play-btn"), playInstruction: $("play-instruction"), teacherNote: $("teacher-note"),
   messageDialog: $("message-dialog"), messageTitle: $("message-title"), messageBody: $("message-body"),
   rulesDialog: $("rules-dialog"), leaveDialog: $("leave-dialog"), confirmResign: $("confirm-resign-btn"),
   resultDialog: $("result-dialog"), resultIcon: $("result-icon"), resultTitle: $("result-title"),
@@ -26,8 +28,8 @@ const els = {
 
 let state = {
   code: null, role: null, uid: null, room: null, unsubscribe: null,
-  selectedTileId: null, demoMode: false, busy: false,
-  announcedResultKey: null, suppressResult: false
+  selectedTileId: null, selectedSide: null, selectedOrientation: null,
+  demoMode: false, busy: false, announcedResultKey: null, suppressResult: false
 };
 
 function showMessage(title, message) {
@@ -68,27 +70,30 @@ function createHalf(label) {
   return half;
 }
 
-/** Renderiza uma peça da mão ou da mesa. Na mesa a direção pode inverter a leitura visual. */
-function renderTile(tile, { selected = false, playable = true, played = false, placement = null } = {}) {
+function renderHandTile(tile, { selected = false, waiting = false } = {}) {
   const el = document.createElement("div");
-  el.className = `domino ${played ? "played" : "selectable"} ${selected ? "selected" : ""} ${playable ? "" : "disabled"}`.trim();
+  el.className = `domino selectable ${selected ? "selected" : ""} ${waiting ? "waiting" : ""}`.trim();
   el.dataset.tileId = tile.id;
+  el.append(createHalf(tile.leftLabel), createHalf(tile.rightLabel));
+  return el;
+}
 
-  let firstLabel = tile.leftLabel;
-  let secondLabel = tile.rightLabel;
-  if (placement?.direction === "left") {
-    firstLabel = tile.rightLabel;
-    secondLabel = tile.leftLabel;
-  }
+/** Renderiza a peça conforme as coordenadas escolhidas durante a jogada. */
+function renderBoardTile(tile, index, metrics) {
+  const visual = visualForTile(tile, index);
+  const horizontal = visual.orientation === "horizontal";
+  const forward = horizontal ? visual.right.x > visual.left.x : visual.right.y > visual.left.y;
+  const firstLabel = forward ? tile.leftLabel : tile.rightLabel;
+  const secondLabel = forward ? tile.rightLabel : tile.leftLabel;
 
+  const el = document.createElement("div");
+  el.className = `domino played board-tile ${visual.orientation}`;
   el.append(createHalf(firstLabel), createHalf(secondLabel));
 
-  if (placement) {
-    el.classList.add("board-tile", placement.orientation, `direction-${placement.direction}`);
-    el.style.gridColumn = `${placement.x + 1} / span ${placement.orientation === "horizontal" ? 2 : 1}`;
-    el.style.gridRow = `${placement.y + 1} / span ${placement.orientation === "vertical" ? 2 : 1}`;
-  }
-
+  const minX = Math.min(visual.left.x, visual.right.x) + metrics.offsetX;
+  const minY = Math.min(visual.left.y, visual.right.y) + metrics.offsetY;
+  el.style.gridColumn = `${minX + 1} / span ${horizontal ? 2 : 1}`;
+  el.style.gridRow = `${minY + 1} / span ${horizontal ? 1 : 2}`;
   return el;
 }
 
@@ -102,18 +107,18 @@ function statusText(room) {
     if (room.game.finishReason === "blocked") return `${winnerName} venceu após bloqueio da mesa.`;
     return `${winnerName} venceu!`;
   }
-  if (room.game.turn === state.role) return "Sua vez.";
+  if (room.game.turn === state.role) return "Sua vez: escolha uma peça, uma ponta e a orientação.";
   return `Vez do ${room.game.turn === "p1" ? "Jogador 1" : "Jogador 2"}.`;
 }
 
 function renderBoard(table) {
   els.chain.innerHTML = "";
-  const dimensions = boardDimensions(table.length);
-  els.chain.style.setProperty("--board-rows", dimensions.rows);
-
+  if (!table.length) return;
+  const metrics = boardMetrics(table);
+  els.chain.style.setProperty("--board-columns", metrics.columns);
+  els.chain.style.setProperty("--board-rows", metrics.rows);
   table.forEach((tile, index) => {
-    const placement = boardPlacement(index);
-    const tileEl = renderTile(tile, { played: true, placement });
+    const tileEl = renderBoardTile(tile, index, metrics);
     if (index === 0) tileEl.classList.add("chain-start");
     if (index === table.length - 1) tileEl.classList.add("chain-end");
     els.chain.appendChild(tileEl);
@@ -138,7 +143,6 @@ function resultKey(room) {
   return `${room.game.winner || "none"}:${room.game.finishReason || "none"}:${room.game.moveNumber || 0}`;
 }
 
-/** Mostra feedback positivo sem humilhar quem perdeu e reforça a prática matemática. */
 function announceResultIfNeeded(room) {
   if (state.suppressResult || room.status !== "finished" || !state.role) return;
   const key = resultKey(room);
@@ -160,10 +164,9 @@ function announceResultIfNeeded(room) {
   } else if (isWinner) {
     els.resultIcon.textContent = "🏆";
     els.resultTitle.textContent = "Você venceu!";
-    const reason = room.game.finishReason === "resignation"
+    els.resultBody.textContent = room.game.finishReason === "resignation"
       ? "Seu colega encerrou a partida, então a vitória ficou com você."
       : "Parabéns! Você reconheceu equivalências e encontrou bons encaixes até o fim.";
-    els.resultBody.textContent = reason;
     createConfetti();
   } else {
     els.resultIcon.textContent = "🌱";
@@ -173,6 +176,56 @@ function announceResultIfNeeded(room) {
 
   els.resultSummary.textContent = `Você encaixou ${myMoves} ${myMoves === 1 ? "peça" : "peças"} corretamente nesta partida.`;
   els.resultDialog.showModal();
+}
+
+function setChoiceButton(button, selected) {
+  button.classList.toggle("choice-selected", selected);
+  button.setAttribute("aria-pressed", String(selected));
+}
+
+/**
+ * Atualiza os controles sem revelar a resposta matemática.
+ * Peça e ponta permanecem livres; apenas restrições físicas da mesa podem
+ * desabilitar uma orientação.
+ */
+function renderPlayControls(table, selected, isMyTurn) {
+  const firstMove = table.length === 0;
+  if (firstMove) state.selectedSide = "right";
+
+  els.sideControls.classList.toggle("hidden", firstMove);
+  els.left.disabled = !selected || !isMyTurn || state.busy;
+  els.right.disabled = !selected || !isMyTurn || state.busy;
+  setChoiceButton(els.left, state.selectedSide === "left");
+  setChoiceButton(els.right, state.selectedSide === "right");
+
+  const sideReady = firstMove || state.selectedSide === "left" || state.selectedSide === "right";
+  const side = firstMove ? "right" : state.selectedSide;
+  const orientations = sideReady ? availableOrientations(table, side) : [];
+
+  if (state.selectedOrientation && !orientations.includes(state.selectedOrientation)) {
+    state.selectedOrientation = null;
+  }
+
+  els.horizontal.disabled = !selected || !isMyTurn || !sideReady || !orientations.includes("horizontal") || state.busy;
+  els.vertical.disabled = !selected || !isMyTurn || !sideReady || !orientations.includes("vertical") || state.busy;
+  setChoiceButton(els.horizontal, state.selectedOrientation === "horizontal");
+  setChoiceButton(els.vertical, state.selectedOrientation === "vertical");
+
+  els.confirmPlay.disabled = !selected || !isMyTurn || !sideReady || !state.selectedOrientation || state.busy;
+
+  if (!isMyTurn) {
+    els.playInstruction.textContent = "Aguarde a sua vez.";
+  } else if (!selected) {
+    els.playInstruction.textContent = "1. Escolha qualquer peça da sua mão.";
+  } else if (!firstMove && !state.selectedSide) {
+    els.playInstruction.textContent = "2. Escolha a ponta esquerda ou direita — mesmo que queira testar uma hipótese.";
+  } else if (!state.selectedOrientation) {
+    els.playInstruction.textContent = firstMove
+      ? "2. Escolha se a primeira peça ficará horizontal ou vertical."
+      : "3. Escolha horizontal ou vertical. Só posições fisicamente impossíveis ficam indisponíveis.";
+  } else {
+    els.playInstruction.textContent = "Pronto. Clique em “Tentar jogada”. A equivalência será conferida somente agora.";
+  }
 }
 
 function render() {
@@ -201,29 +254,28 @@ function render() {
   const isMyTurn = room.status === "playing" && room.game.turn === state.role;
   els.hand.innerHTML = "";
   hand.forEach((tile) => {
-    const playable = isMyTurn && canPlayTile(tile, table);
-    const tileEl = renderTile(tile, {
+    const tileEl = renderHandTile(tile, {
       selected: tile.id === state.selectedTileId,
-      playable: isMyTurn ? playable : false
+      waiting: !isMyTurn
     });
     tileEl.addEventListener("click", () => {
       if (!isMyTurn) return showMessage("Aguarde", "Ainda não é a sua vez.");
-      if (!playable) return showMessage("Essa peça não encaixa", "Procure uma peça equivalente a uma das pontas da mesa.");
-      state.selectedTileId = state.selectedTileId === tile.id ? null : tile.id;
+      const deselecting = state.selectedTileId === tile.id;
+      state.selectedTileId = deselecting ? null : tile.id;
+      if (deselecting) {
+        state.selectedSide = table.length ? null : "right";
+        state.selectedOrientation = null;
+      }
       render();
     });
     els.hand.appendChild(tileEl);
   });
 
   const selected = hand.find((tile) => tile.id === state.selectedTileId);
-  const sides = selected ? validSides(selected, table) : [];
-  els.left.disabled = !selected || !sides.includes("left") || state.busy;
-  els.right.disabled = !selected || !sides.includes("right") || state.busy;
-  els.right.textContent = !table.length && selected ? "Jogar peça" : "Jogar à direita →";
-  els.left.classList.toggle("hidden", !table.length);
+  renderPlayControls(table, selected, isMyTurn);
 
-  const canPass = isMyTurn && !hasAnyMove(hand, table);
-  els.pass.classList.toggle("hidden", !canPass);
+  // “Passar” também é uma tentativa do aluno: o servidor só aceita se não houver jogada.
+  els.pass.classList.toggle("hidden", !isMyTurn);
   els.pass.disabled = state.busy;
 
   els.teacherNote.classList.toggle("hidden", !state.demoMode && !(room.status === "finished" && state.role === "p1"));
@@ -235,12 +287,18 @@ function render() {
   }
 }
 
+function resetPlaySelection() {
+  state.selectedTileId = null;
+  state.selectedSide = null;
+  state.selectedOrientation = null;
+}
+
 async function handleCreate() {
   if (!isOnlineBackendReady()) return showMessage("Firebase ainda não configurado", "Use o modo demonstração por enquanto.");
   try {
     setBusy(true);
     const session = await createRoom();
-    state = { ...state, ...session, demoMode: false, selectedTileId: null, announcedResultKey: null, suppressResult: false };
+    state = { ...state, ...session, demoMode: false, selectedTileId: null, selectedSide: null, selectedOrientation: null, announcedResultKey: null, suppressResult: false };
     showGame();
     subscribeCurrentRoom();
   } catch (error) {
@@ -256,7 +314,7 @@ async function handleJoin() {
   try {
     setBusy(true);
     const session = await joinRoom(code);
-    state = { ...state, ...session, demoMode: false, selectedTileId: null, announcedResultKey: null, suppressResult: false };
+    state = { ...state, ...session, demoMode: false, selectedTileId: null, selectedSide: null, selectedOrientation: null, announcedResultKey: null, suppressResult: false };
     showGame();
     subscribeCurrentRoom();
   } catch (error) {
@@ -273,20 +331,24 @@ function subscribeCurrentRoom() {
     }
     state.room = room;
     if (room.status === "playing") state.announcedResultKey = null;
-    if (state.selectedTileId && !currentHand(room).some((tile) => tile.id === state.selectedTileId)) state.selectedTileId = null;
+    if (state.selectedTileId && !currentHand(room).some((tile) => tile.id === state.selectedTileId)) resetPlaySelection();
     render();
     announceResultIfNeeded(room);
   }, (error) => showMessage("Erro de sincronização", error.message));
 }
 
-async function handlePlay(side) {
-  if (!state.selectedTileId || state.busy) return;
+async function handlePlay() {
+  if (!state.selectedTileId || !state.selectedOrientation || state.busy) return;
+  const table = state.room?.game?.table || [];
+  const side = table.length ? state.selectedSide : "right";
+  if (!side) return showMessage("Escolha uma ponta", "Selecione a ponta esquerda ou direita antes de tentar a jogada.");
+
   try {
     state.busy = true;
     render();
     if (state.demoMode) {
-      demoPlay(state.room, state.role, state.selectedTileId, side);
-      state.selectedTileId = null;
+      demoPlay(state.room, state.role, state.selectedTileId, side, state.selectedOrientation);
+      resetPlaySelection();
       render();
       announceResultIfNeeded(state.room);
       setTimeout(() => {
@@ -295,11 +357,12 @@ async function handlePlay(side) {
         announceResultIfNeeded(state.room);
       }, 650);
     } else {
-      await playTile(state.code, state.role, state.selectedTileId, side);
-      state.selectedTileId = null;
+      await playTile(state.code, state.role, state.selectedTileId, side, state.selectedOrientation);
+      resetPlaySelection();
     }
   } catch (error) {
-    showMessage("Jogada não realizada", error.message);
+    // Mantém a seleção para o aluno revisar sua hipótese após o feedback.
+    showMessage("Essa tentativa não funcionou", error.message);
   } finally {
     state.busy = false;
     render();
@@ -312,6 +375,7 @@ async function handlePass() {
     render();
     if (state.demoMode) {
       demoPass(state.room, state.role);
+      resetPlaySelection();
       render();
       announceResultIfNeeded(state.room);
       setTimeout(() => {
@@ -319,9 +383,12 @@ async function handlePass() {
         render();
         announceResultIfNeeded(state.room);
       }, 650);
-    } else await passTurn(state.code, state.role);
+    } else {
+      await passTurn(state.code, state.role);
+      resetPlaySelection();
+    }
   } catch (error) {
-    showMessage("Não foi possível passar", error.message);
+    showMessage("Ainda não pode passar", error.message);
   } finally {
     state.busy = false;
     render();
@@ -333,9 +400,9 @@ function handleHint() {
   if (!room || room.status !== "playing") return showMessage("Dica", "A partida ainda não começou.");
   if (room.game.turn !== state.role) return showMessage("Dica", "Aguarde sua vez para procurar uma jogada.");
   const playable = currentHand(room).filter((tile) => canPlayTile(tile, room.game.table || []));
-  if (!playable.length) return showMessage("Dica", "Você não possui uma jogada válida. Use “Passar a vez”.");
+  if (!playable.length) return showMessage("Dica", "Você não possui uma jogada válida neste momento. Talvez seja hora de tentar passar a vez.");
   const first = playable[0];
-  showMessage("Dica", `Observe a peça ${first.leftLabel} | ${first.rightLabel}. Pelo menos uma metade é equivalente a uma ponta da mesa.`);
+  showMessage("Dica", `Observe com atenção a peça ${first.leftLabel} | ${first.rightLabel}. Pelo menos uma metade representa o mesmo valor de uma ponta da mesa.`);
 }
 
 async function handleRestart() {
@@ -344,7 +411,7 @@ async function handleRestart() {
     if (state.demoMode) {
       const demo = createDemoGame();
       state.room = demo.room;
-      state.selectedTileId = null;
+      resetPlaySelection();
       state.announcedResultKey = null;
       render();
     } else await restartGame(state.code, state.role);
@@ -355,7 +422,11 @@ async function handleRestart() {
 
 function startDemo() {
   const demo = createDemoGame();
-  state = { ...state, code: demo.code, role: demo.role, room: demo.room, demoMode: true, selectedTileId: null, announcedResultKey: null, suppressResult: false };
+  state = {
+    ...state, code: demo.code, role: demo.role, room: demo.room, demoMode: true,
+    selectedTileId: null, selectedSide: null, selectedOrientation: null,
+    announcedResultKey: null, suppressResult: false
+  };
   showGame();
   render();
 }
@@ -363,12 +434,8 @@ function startDemo() {
 async function handleLeaveClick() {
   const room = state.room;
   if (!room) return leaveLocal();
-
   const activeMatch = room.status === "playing" && room.players?.p1 && room.players?.p2;
-  if (activeMatch) {
-    els.leaveDialog.showModal();
-    return;
-  }
+  if (activeMatch) return els.leaveDialog.showModal();
 
   try {
     if (!state.demoMode) await markDisconnected(state.code, state.role);
@@ -397,8 +464,8 @@ function leaveLocal() {
   if (els.leaveDialog.open) els.leaveDialog.close();
   state = {
     code: null, role: null, uid: null, room: null, unsubscribe: null,
-    selectedTileId: null, demoMode: false, busy: false,
-    announcedResultKey: null, suppressResult: false
+    selectedTileId: null, selectedSide: null, selectedOrientation: null,
+    demoMode: false, busy: false, announcedResultKey: null, suppressResult: false
   };
   showSetup();
 }
@@ -416,8 +483,11 @@ els.copyCode.addEventListener("click", async () => {
 });
 els.leave.addEventListener("click", handleLeaveClick);
 els.confirmResign.addEventListener("click", (event) => { event.preventDefault(); confirmResignation(); });
-els.left.addEventListener("click", () => handlePlay("left"));
-els.right.addEventListener("click", () => handlePlay("right"));
+els.left.addEventListener("click", () => { state.selectedSide = "left"; state.selectedOrientation = null; render(); });
+els.right.addEventListener("click", () => { state.selectedSide = "right"; state.selectedOrientation = null; render(); });
+els.horizontal.addEventListener("click", () => { state.selectedOrientation = "horizontal"; render(); });
+els.vertical.addEventListener("click", () => { state.selectedOrientation = "vertical"; render(); });
+els.confirmPlay.addEventListener("click", handlePlay);
 els.pass.addEventListener("click", handlePass);
 els.hint.addEventListener("click", handleHint);
 els.rules.addEventListener("click", () => els.rulesDialog.showModal());
