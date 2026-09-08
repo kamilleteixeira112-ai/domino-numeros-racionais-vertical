@@ -4,6 +4,7 @@ import { getDatabase, ref, get, set, update, onValue, onDisconnect, runTransacti
 import { firebaseConfig, isFirebaseConfigured } from "./firebase-config.js";
 import { createDeck, shuffleDeck } from "./domino-data.js";
 import { hasAnyMove, orientTile, blockedWinner } from "./game-logic.js";
+import { createVisualPlacement } from "./board-layout.js";
 
 let app;
 let auth;
@@ -135,29 +136,51 @@ async function readPlayableRoom(code, role) {
   return room;
 }
 
-export async function playTile(code, role, tileId, side) {
+/**
+ * Tenta uma jogada somente depois que o aluno escolhe peça, ponta e orientação.
+ * Não filtramos previamente jogadas matematicamente erradas: `orientTile` faz
+ * a conferência no momento da tentativa e devolve feedback se não houver
+ * equivalência. A geometria horizontal/vertical também é validada aqui.
+ */
+export async function playTile(code, role, tileId, side, visualOrientation) {
   const room = await readPlayableRoom(code, role);
   if (room.status !== "playing") throw new Error("A partida não está disponível para jogar.");
   if (room.game.turn !== role) throw new Error("Ainda não é a sua vez.");
+  if (!["horizontal", "vertical"].includes(visualOrientation)) {
+    throw new Error("Escolha se deseja colocar a peça na horizontal ou na vertical.");
+  }
 
   const handKey = role === "p1" ? "hand1" : "hand2";
   const hand = room.game[handKey] || [];
   const tileIndex = hand.findIndex((tile) => tile.id === tileId);
   if (tileIndex < 0) throw new Error("A peça selecionada não está mais na sua mão.");
 
-  const oriented = orientTile(hand[tileIndex], room.game.table || [], side);
+  const table = room.game.table || [];
+  const safeSide = table.length ? (side === "left" ? "left" : "right") : "right";
+
+  // Primeiro validamos a equivalência matemática. A tentativa pode estar errada,
+  // e isso faz parte da proposta pedagógica: o aluno recebe feedback após tentar.
+  const oriented = orientTile(hand[tileIndex], table, safeSide);
+
+  // Só a impossibilidade física da mesa limita horizontal/vertical.
+  const visual = createVisualPlacement(table, safeSide, visualOrientation);
+  if (!visual) {
+    throw new Error("Essa orientação não cabe fisicamente nessa ponta da mesa. Tente a outra orientação ou a outra ponta.");
+  }
+
+  oriented.visual = visual;
   oriented.playedBy = role;
   oriented.move = (room.game.moveNumber || 0) + 1;
 
   const nextGame = {
     ...room.game,
     [handKey]: hand.filter((_, index) => index !== tileIndex),
-    table: [...(room.game.table || [])],
+    table: [...table],
     moveNumber: oriented.move,
     consecutivePasses: 0
   };
 
-  if (side === "left" && nextGame.table.length) nextGame.table.unshift(oriented);
+  if (safeSide === "left" && nextGame.table.length) nextGame.table.unshift(oriented);
   else nextGame.table.push(oriented);
 
   if (nextGame[handKey].length === 0) {
@@ -171,13 +194,20 @@ export async function playTile(code, role, tileId, side) {
   }
 }
 
+/**
+ * O botão de passar fica disponível durante a vez do aluno. Se ainda existir
+ * uma jogada correta, a tentativa é recusada aqui, sem a interface entregar a
+ * resposta antecipadamente.
+ */
 export async function passTurn(code, role) {
   const room = await readPlayableRoom(code, role);
   if (room.status !== "playing") throw new Error("A partida não está disponível.");
   if (room.game.turn !== role) throw new Error("Não é possível passar a vez agora.");
 
   const hand = role === "p1" ? (room.game.hand1 || []) : (room.game.hand2 || []);
-  if (hasAnyMove(hand, room.game.table || [])) throw new Error("Você ainda possui pelo menos uma jogada válida.");
+  if (hasAnyMove(hand, room.game.table || [])) {
+    throw new Error("Ainda existe pelo menos uma jogada válida. Observe novamente as equivalências nas pontas da mesa.");
+  }
 
   const nextGame = { ...room.game, consecutivePasses: (room.game.consecutivePasses || 0) + 1 };
   if (nextGame.consecutivePasses >= 2) {
